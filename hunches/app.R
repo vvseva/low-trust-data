@@ -65,7 +65,7 @@ ui <- page_sidebar(
     card(
       card_header("Uncertainty Interval"),
       card_body(
-        sliderInput("interval_width", "Interval Width for New Annotation:", min = 0.1, max = 0.99, value = 0.9, step = 0.05),
+        sliderInput("interval_width", "Interval Width for New Annotation:", min = 0.1, max = 0.99, value = 0.5, step = 0.05),
         p(class = "text-muted", "Click on the plot to add a custom annotated interval. This slider controls its width.")
       )
     ),
@@ -180,9 +180,18 @@ server <- function(input, output, session) {
       scale_color_manual(values = c("Immigration" = "#0072B2", "Emigration" = "#D55E00")) +
       scale_y_continuous(labels = scales::comma) +
       scale_x_continuous(breaks = scales::pretty_breaks(n = 8)) +
-      labs(title = "Annual Immigration vs. Emigration in Sweden", subtitle = "Annotations highlight key events influencing immigration.", x = "Year", y = "Number of People", color = "Flow Type") +
+      labs(title = "Annual Immigration vs. Emigration in Sweden", 
+           subtitle = "Annotations highlight key events influencing immigration.", 
+           x = NULL, y = "Number of People", color = "Flow Type") +
       theme_minimal(base_size = 14) +
-      theme(legend.position = "bottom", plot.title = element_text(face = "bold", size = 18), plot.subtitle = element_text(color = "grey30"))
+      theme(legend.position = "bottom", 
+            plot.title = element_text(face = "bold", size = 18), 
+            plot.subtitle = element_text(color = "grey30"),
+            panel.grid.major = element_blank(),
+            panel.grid.minor = element_blank()
+            )+
+      expand_limits(y=0)
+    
   })
   
   # --- Reactive Plot Object ---
@@ -191,10 +200,20 @@ server <- function(input, output, session) {
     if (nrow(rv$hunches) > 0) {
       for (i in 1:nrow(rv$hunches)) {
         hunch <- rv$hunches[i, ]
-        interval_data <- data.frame(Year = hunch$Year, Value = rnorm(1000, mean = hunch$Count, sd = hunch$Count * 0.1))
-        p <- p + stat_gradientinterval(data = interval_data, aes(x = Year, y = Value, fill = after_stat(level)), .width = hunch$IntervalWidth, inherit.aes = FALSE, show.legend = FALSE, interval_size = 0)
+        interval_data <- data.frame(Year = hunch$Year, Value = rnorm(1000, mean = hunch$Count, sd = hunch$IntervalWidth * hunch$Count)) |> 
+          filter(Value >= 0)
+        p <- p + stat_interval(
+          data = interval_data, 
+          aes(x = Year, y = Value),
+          #     slab_alpha  = after_stat(level)),
+          # fill_type = "gradient",
+          # fill = "cyan4",
+          # color = "white",
+          alpha  = 0.5,
+          inherit.aes = FALSE,
+          show.legend = FALSE)
       }
-      p <- p + scale_fill_brewer(palette = "Blues") + geom_point(data = rv$hunches, aes(x = Year, y = Count), color = "black", size = 4, shape = 21, fill = "white", stroke = 1.5, inherit.aes = FALSE) + geom_text_repel(data = rv$hunches, aes(x = Year, y = Count, label = Comment), box.padding = 1, point.padding = 0.5, segment.color = 'grey50', inherit.aes = FALSE)
+      p <- p + scale_color_brewer(palette = "Blues")
     }
     p
   })
