@@ -28,15 +28,15 @@ tryCatch({
   immigrations_raw <- read_csv("Immigrations.csv")
   emigrations_raw <- read_csv("Emigrations.csv")
   
-  immigrations <- immigrations_raw %>%
-    pivot_longer(cols = everything(), names_to = "Year", values_to = "Count") %>%
+  immigrations <- immigrations_raw |>
+    pivot_longer(cols = everything(), names_to = "Year", values_to = "Count") |>
     mutate(Type = "Immigration", Year = as.numeric(Year), Count = as.numeric(Count))
   
-  emigrations <- emigrations_raw %>%
-    pivot_longer(cols = everything(), names_to = "Year", values_to = "Count") %>%
+  emigrations <- emigrations_raw |>
+    pivot_longer(cols = everything(), names_to = "Year", values_to = "Count") |>
     mutate(Type = "Emigration", Year = as.numeric(Year), Count = as.numeric(Count))
   
-  migration_data <- bind_rows(immigrations, emigrations) %>%
+  migration_data <- bind_rows(immigrations, emigrations) |>
     filter(!is.na(Year), !is.na(Count))
   
 }, error = function(e) {
@@ -62,7 +62,7 @@ ui <- page_sidebar(
     card(
       card_header("Uncertainty Interval"),
       card_body(
-        sliderInput("interval_width", "Interval Width (.width):", min = 0.1, max = 0.99, value = 0.9, step = 0.05),
+        sliderInput("interval_width", "Interval Width for New Annotation:", min = 0.1, max = 0.99, value = 0.9, step = 0.05),
         p(class = "text-muted", "Click on the plot to add a custom annotated interval. This slider controls its width.")
       )
     ),
@@ -80,7 +80,7 @@ ui <- page_sidebar(
   ),
   card(
     # Set a minimum height for this card to prevent the plot from shifting on hover.
-    style = "min-height: 290px;",
+    style = "min-height: 350px;",
     card_header("Hover Information"),
     card_body(uiOutput("hover_info"))
   )
@@ -90,9 +90,9 @@ ui <- page_sidebar(
 server <- function(input, output, session) {
   
   # --- Reactive Values ---
-  # Stores user-added hunches and temporary click information.
+  # Stores user-added hunches. Now includes IntervalWidth.
   rv <- reactiveValues(
-    hunches = data.frame(Year=numeric(), Count=numeric(), Comment=character(), id=character()),
+    hunches = data.frame(Year=numeric(), Count=numeric(), Comment=character(), id=character(), IntervalWidth=numeric()),
     pending_hunch = NULL
   )
   
@@ -118,11 +118,13 @@ server <- function(input, output, session) {
   observeEvent(input$submit_hunch, {
     req(rv$pending_hunch, input$hunch_comment)
     
+    # Create the new annotation, capturing the current interval width.
     new_hunch <- data.frame(
       Year = rv$pending_hunch$Year,
       Count = rv$pending_hunch$Count,
       Comment = input$hunch_comment,
-      id = paste0("hunch-", as.numeric(Sys.time())) # Unique ID
+      id = paste0("hunch-", as.numeric(Sys.time())), # Unique ID
+      IntervalWidth = input$interval_width # Store the interval width
     )
     
     rv$hunches <- bind_rows(rv$hunches, new_hunch)
@@ -132,20 +134,15 @@ server <- function(input, output, session) {
   
   # Triggered by the "Clear All My Annotations" button.
   observeEvent(input$clear_hunches, {
-    rv$hunches <- data.frame(Year=numeric(), Count=numeric(), Comment=character(), id=character())
+    rv$hunches <- data.frame(Year=numeric(), Count=numeric(), Comment=character(), id=character(), IntervalWidth=numeric())
   })
   
   # Triggered by double-clicking the plot to remove an annotation.
   observeEvent(input$plot_dblclick, {
-    # Do nothing if there are no hunches to remove
     if (nrow(rv$hunches) == 0) return()
-    
-    # Find the point closest to the double-click
     near_point_to_delete <- nearPoints(rv$hunches, input$plot_dblclick, maxpoints = 1, threshold = 10)
-    
-    # If a point is found, remove it from the reactive data frame
     if (nrow(near_point_to_delete) > 0) {
-      rv$hunches <- rv$hunches %>% filter(id != near_point_to_delete$id)
+      rv$hunches <- rv$hunches |> filter(id != near_point_to_delete$id)
     }
   })
   
@@ -164,41 +161,44 @@ server <- function(input, output, session) {
   })
   
   # --- Reactive Plot Object ---
-  # This reactive expression generates the plot. It only depends on the base plot
-  # and the user's annotations (hunches). It will NOT re-run on hover events.
   plot_to_render <- reactive({
     p <- base_plot()
     
     if (nrow(rv$hunches) > 0) {
-      user_hunches <- rv$hunches
-      
-      interval_data <- user_hunches %>%
-        rowwise() %>%
-        reframe(
-          Year = Year,
-          Value = rnorm(1000, mean = Count, sd = Count * 0.1),
-          Comment = Comment,
-          id = id
+      # Loop to add each interval layer individually with its saved width.
+      # This ensures intervals are drawn behind the points and labels.
+      for (i in 1:nrow(rv$hunches)) {
+        hunch <- rv$hunches[i, ]
+        interval_data <- data.frame(
+          Year = hunch$Year,
+          Value = rnorm(1000, mean = hunch$Count, sd = hunch$Count * 0.1)
         )
+        p <- p + stat_gradientinterval(
+          data = interval_data, 
+          aes(x = Year, y = Value, fill = after_stat(level)), 
+          .width = hunch$IntervalWidth, # Use the specific width for this hunch
+          inherit.aes = FALSE, 
+          show.legend = FALSE, 
+          interval_size = 0
+        )
+      }
       
+      # Add the fill scale, points, and labels on top of all intervals.
       p <- p +
-        stat_gradientinterval(data = interval_data, aes(x = Year, y = Value, fill = after_stat(level), group = id), .width = input$interval_width, inherit.aes = FALSE, show.legend = FALSE, interval_size = 0) +
-        geom_point(data = user_hunches, aes(x = Year, y = Count), color = "black", size = 4, shape = 21, fill = "white", stroke = 1.5, inherit.aes = FALSE) +
-        geom_text_repel(data = user_hunches, aes(x = Year, y = Count, label = Comment), box.padding = 1, point.padding = 0.5, segment.color = 'grey50', inherit.aes = FALSE) +
-        scale_fill_brewer(palette = "Blues")
+        scale_fill_brewer(palette = "Blues") +
+        geom_point(data = rv$hunches, aes(x = Year, y = Count), color = "black", size = 4, shape = 21, fill = "white", stroke = 1.5, inherit.aes = FALSE) +
+        geom_text_repel(data = rv$hunches, aes(x = Year, y = Count, label = Comment), box.padding = 1, point.padding = 0.5, segment.color = 'grey50', inherit.aes = FALSE)
     }
     
     p
   })
   
   # --- Main Plot Rendering ---
-  # This simply calls the reactive plot object.
   output$migration_plot <- renderPlot({
     plot_to_render()
   }, res = 100)
   
   # --- Hover Information UI ---
-  # This UI element updates on hover, but does not trigger a plot re-render.
   output$hover_info <- renderUI({
     req(input$plot_hover)
     
@@ -209,7 +209,10 @@ server <- function(input, output, session) {
       info <- near_hunch
       div(class = "alert alert-info",
           h5("User Annotation Details"),
-          p(strong("Year: "), round(info$Year, 1), br(), strong("Value: "), scales::comma(round(info$Count)), br(), strong("Comment: "), info$Comment),
+          p(strong("Year: "), round(info$Year, 1), br(), 
+            strong("Value: "), scales::comma(round(info$Count)), br(), 
+            strong("Comment: "), info$Comment, br(),
+            strong("Interval Width: "), paste0(info$IntervalWidth * 100, "%")), # Display specific width
           p(em("Double-click this point to delete."))
       )
     } else if (nrow(near_annotation) > 0) {
