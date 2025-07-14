@@ -6,12 +6,12 @@
 # data. It features an interactive ggplot2 line chart where users can click
 # to add, and double-click to remove, custom annotated uncertainty intervals.
 #
-# Libraries required: shiny, ggplot2, dplyr, tidyr, bslib, ggdist, here, readr, ggrepel
+# Libraries required: shiny, ggplot2, dplyr, tidyr, bslib, ggdist, here, readr, ggrepel, shinyjs
 # ==============================================================================
 
 # -- 1. Load Necessary Libraries -----------------------------------------------
 # Ensure all required packages are installed.
-# you can run: install.packages(c("shiny", "ggplot2", "dplyr", "tidyr", "bslib", "ggdist", "here", "readr", "ggrepel"))
+# you can run: install.packages(c("shiny", "ggplot2", "dplyr", "tidyr", "bslib", "ggdist", "here", "readr", "ggrepel", "shinyjs"))
 
 library(shiny)
 library(ggplot2)
@@ -22,6 +22,7 @@ library(ggdist)
 library(here)
 library(readr)
 library(ggrepel) # For better label placement
+library(shinyjs)   # For clipboard functionality
 
 # -- 2. Data Loading and Preprocessing -----------------------------------------
 tryCatch({
@@ -56,6 +57,8 @@ annotations_df <- data.frame(
 ui <- page_sidebar(
   title = "Swedish Migration Trends (1997-2024)",
   theme = bs_theme(version = 5, bootswatch = "cosmo"),
+  # Initialize shinyjs
+  useShinyjs(),
   sidebar = sidebar(
     title = "Plot Controls",
     width = 350,
@@ -70,7 +73,9 @@ ui <- page_sidebar(
       card_header("Manage Annotations"),
       card_body(
         actionButton("clear_hunches", "Clear All My Annotations", icon = icon("trash"), class = "btn-danger w-100"),
-        p(class = "text-muted mt-2", "You can also double-click an annotation on the plot to remove it individually.")
+        p(class = "text-muted mt-2", "You can also double-click an annotation on the plot to remove it individually."),
+        hr(),
+        actionButton("copy_code", "Copy Plot Code", icon = icon("copy"), class = "btn-primary w-100")
       )
     )
   ),
@@ -80,7 +85,7 @@ ui <- page_sidebar(
   ),
   card(
     # Set a minimum height for this card to prevent the plot from shifting on hover.
-    style = "min-height: 350px;",
+    style = "min-height: 290px;",
     card_header("Hover Information"),
     card_body(uiOutput("hover_info"))
   )
@@ -90,23 +95,18 @@ ui <- page_sidebar(
 server <- function(input, output, session) {
   
   # --- Reactive Values ---
-  # Stores user-added hunches. Now includes IntervalWidth.
   rv <- reactiveValues(
     hunches = data.frame(Year=numeric(), Count=numeric(), Comment=character(), id=character(), IntervalWidth=numeric()),
     pending_hunch = NULL
   )
   
   # --- Event Observers ---
-  # Triggered when user clicks the plot to add an annotation.
   observeEvent(input$plot_click, {
     click <- input$plot_click
-    
     min_year <- min(migration_data$Year, na.rm = TRUE)
     max_year <- max(migration_data$Year, na.rm = TRUE)
     if(click$x < min_year || click$x > max_year) return()
-    
     rv$pending_hunch <- list(Year = click$x, Count = click$y)
-    
     showModal(modalDialog(
       title = "Add Annotation",
       textInput("hunch_comment", "Enter your comment or hunch:", placeholder = "e.g., 'Possible economic downturn'"),
@@ -114,36 +114,61 @@ server <- function(input, output, session) {
     ))
   })
   
-  # Triggered when user submits the comment in the modal.
   observeEvent(input$submit_hunch, {
     req(rv$pending_hunch, input$hunch_comment)
-    
-    # Create the new annotation, capturing the current interval width.
     new_hunch <- data.frame(
       Year = rv$pending_hunch$Year,
       Count = rv$pending_hunch$Count,
       Comment = input$hunch_comment,
-      id = paste0("hunch-", as.numeric(Sys.time())), # Unique ID
-      IntervalWidth = input$interval_width # Store the interval width
+      id = paste0("hunch-", as.numeric(Sys.time())),
+      IntervalWidth = input$interval_width
     )
-    
     rv$hunches <- bind_rows(rv$hunches, new_hunch)
     rv$pending_hunch <- NULL
     removeModal()
   })
   
-  # Triggered by the "Clear All My Annotations" button.
   observeEvent(input$clear_hunches, {
     rv$hunches <- data.frame(Year=numeric(), Count=numeric(), Comment=character(), id=character(), IntervalWidth=numeric())
   })
   
-  # Triggered by double-clicking the plot to remove an annotation.
   observeEvent(input$plot_dblclick, {
     if (nrow(rv$hunches) == 0) return()
     near_point_to_delete <- nearPoints(rv$hunches, input$plot_dblclick, maxpoints = 1, threshold = 10)
     if (nrow(near_point_to_delete) > 0) {
       rv$hunches <- rv$hunches |> filter(id != near_point_to_delete$id)
     }
+  })
+  
+  # --- Code Generation and Copying ---
+  observeEvent(input$copy_code, {
+    # Use dput to create a reproducible version of the user's annotations
+    hunches_code <- if (nrow(rv$hunches) > 0) {
+      paste("user_annotations <-", paste(capture.output(dput(rv$hunches)), collapse = "\n"))
+    } else {
+      "user_annotations <- data.frame(Year=numeric(), Count=numeric(), Comment=character(), id=character(), IntervalWidth=numeric())"
+    }
+    
+    # Generate only the code for the user-created hunches
+    reproducible_code <- paste(
+      "# --- User-Generated Annotations Code ---",
+      "# This code defines a data frame with your custom annotations.",
+      hunches_code,
+      sep = "\n"
+    )
+    
+    # Use shinyjs to run JavaScript that copies the text to the clipboard
+    runjs(paste0("
+      const el = document.createElement('textarea');
+      el.value = ", jsonlite::toJSON(reproducible_code), ";
+      document.body.appendChild(el);
+      el.select();
+      document.execCommand('copy');
+      document.body.removeChild(el);
+    "))
+    
+    # Show a notification to the user
+    showNotification("User annotation code copied to clipboard!", type = "message")
   })
   
   # --- Base Plot ---
@@ -163,33 +188,14 @@ server <- function(input, output, session) {
   # --- Reactive Plot Object ---
   plot_to_render <- reactive({
     p <- base_plot()
-    
     if (nrow(rv$hunches) > 0) {
-      # Loop to add each interval layer individually with its saved width.
-      # This ensures intervals are drawn behind the points and labels.
       for (i in 1:nrow(rv$hunches)) {
         hunch <- rv$hunches[i, ]
-        interval_data <- data.frame(
-          Year = hunch$Year,
-          Value = rnorm(1000, mean = hunch$Count, sd = hunch$Count * 0.1)
-        )
-        p <- p + stat_gradientinterval(
-          data = interval_data, 
-          aes(x = Year, y = Value, fill = after_stat(level)), 
-          .width = hunch$IntervalWidth, # Use the specific width for this hunch
-          inherit.aes = FALSE, 
-          show.legend = FALSE, 
-          interval_size = 0
-        )
+        interval_data <- data.frame(Year = hunch$Year, Value = rnorm(1000, mean = hunch$Count, sd = hunch$Count * 0.1))
+        p <- p + stat_gradientinterval(data = interval_data, aes(x = Year, y = Value, fill = after_stat(level)), .width = hunch$IntervalWidth, inherit.aes = FALSE, show.legend = FALSE, interval_size = 0)
       }
-      
-      # Add the fill scale, points, and labels on top of all intervals.
-      p <- p +
-        scale_fill_brewer(palette = "Blues") +
-        geom_point(data = rv$hunches, aes(x = Year, y = Count), color = "black", size = 4, shape = 21, fill = "white", stroke = 1.5, inherit.aes = FALSE) +
-        geom_text_repel(data = rv$hunches, aes(x = Year, y = Count, label = Comment), box.padding = 1, point.padding = 0.5, segment.color = 'grey50', inherit.aes = FALSE)
+      p <- p + scale_fill_brewer(palette = "Blues") + geom_point(data = rv$hunches, aes(x = Year, y = Count), color = "black", size = 4, shape = 21, fill = "white", stroke = 1.5, inherit.aes = FALSE) + geom_text_repel(data = rv$hunches, aes(x = Year, y = Count, label = Comment), box.padding = 1, point.padding = 0.5, segment.color = 'grey50', inherit.aes = FALSE)
     }
-    
     p
   })
   
@@ -201,18 +207,13 @@ server <- function(input, output, session) {
   # --- Hover Information UI ---
   output$hover_info <- renderUI({
     req(input$plot_hover)
-    
     near_annotation <- nearPoints(annotations_df, input$plot_hover, xvar = "year", yvar = "y_pos", threshold = 10, maxpoints = 1)
     near_hunch <- if(nrow(rv$hunches) > 0) nearPoints(rv$hunches, input$plot_hover, xvar = "Year", yvar = "Count", threshold = 10, maxpoints = 1) else data.frame()
-    
     if (nrow(near_hunch) > 0) {
       info <- near_hunch
       div(class = "alert alert-info",
           h5("User Annotation Details"),
-          p(strong("Year: "), round(info$Year, 1), br(), 
-            strong("Value: "), scales::comma(round(info$Count)), br(), 
-            strong("Comment: "), info$Comment, br(),
-            strong("Interval Width: "), paste0(info$IntervalWidth * 100, "%")), # Display specific width
+          p(strong("Year: "), round(info$Year, 1), br(), strong("Value: "), scales::comma(round(info$Count)), br(), strong("Comment: "), info$Comment, br(), strong("Interval Width: "), paste0(info$IntervalWidth * 100, "%")),
           p(em("Double-click this point to delete."))
       )
     } else if (nrow(near_annotation) > 0) {
@@ -229,3 +230,6 @@ server <- function(input, output, session) {
 
 # -- 5. Run the Application ----------------------------------------------------
 shinyApp(ui = ui, server = server)
+
+# --- User-Generated Annotations Code ---
+# This code defines a data frame with your custom annotations.
