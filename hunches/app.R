@@ -4,10 +4,7 @@
 # Description:
 # This Shiny app visualizes and analyzes Swedish immigration and emigration
 # data. It features an interactive ggplot2 line chart where users can click
-# to add a custom annotated uncertainty interval.
-#
-# Author: Gemini
-# Date: 2024-07-15
+# to add, and double-click to remove, custom annotated uncertainty intervals.
 #
 # Libraries required: shiny, ggplot2, dplyr, tidyr, bslib, ggdist, here, readr, ggrepel
 # ==============================================================================
@@ -28,20 +25,20 @@ library(ggrepel) # For better label placement
 
 # -- 2. Data Loading and Preprocessing -----------------------------------------
 tryCatch({
-  immigrations_raw <- read_csv(here::here("Immigrations.csv"))
-  emigrations_raw <- read_csv(here::here("Emigrations.csv"))
-
+  immigrations_raw <- read_csv("Immigrations.csv")
+  emigrations_raw <- read_csv("Emigrations.csv")
+  
   immigrations <- immigrations_raw %>%
     pivot_longer(cols = everything(), names_to = "Year", values_to = "Count") %>%
     mutate(Type = "Immigration", Year = as.numeric(Year), Count = as.numeric(Count))
-
+  
   emigrations <- emigrations_raw %>%
     pivot_longer(cols = everything(), names_to = "Year", values_to = "Count") %>%
     mutate(Type = "Emigration", Year = as.numeric(Year), Count = as.numeric(Count))
-
+  
   migration_data <- bind_rows(immigrations, emigrations) %>%
     filter(!is.na(Year), !is.na(Count))
-
+  
 }, error = function(e) {
   stop(paste("Error reading or processing CSV files:", e$message,
              "\nPlease ensure 'Immigrations.csv' and 'Emigrations.csv' are in the project directory and in the correct format."))
@@ -68,13 +65,22 @@ ui <- page_sidebar(
         sliderInput("interval_width", "Interval Width (.width):", min = 0.1, max = 0.99, value = 0.9, step = 0.05),
         p(class = "text-muted", "Click on the plot to add a custom annotated interval. This slider controls its width.")
       )
+    ),
+    card(
+      card_header("Manage Annotations"),
+      card_body(
+        actionButton("clear_hunches", "Clear All My Annotations", icon = icon("trash"), class = "btn-danger w-100"),
+        p(class = "text-muted mt-2", "You can also double-click an annotation on the plot to remove it individually.")
+      )
     )
   ),
   card(
     card_header("Migration Timeline"),
-    card_body(plotOutput("migration_plot", click = "plot_click", hover = hoverOpts("plot_hover", delay = 100, delayType = "debounce")))
+    card_body(plotOutput("migration_plot", click = "plot_click", dblclick = "plot_dblclick", hover = hoverOpts("plot_hover", delay = 100, delayType = "debounce")))
   ),
   card(
+    # Set a minimum height for this card to prevent the plot from shifting on hover.
+    style = "min-height: 290px;",
     card_header("Hover Information"),
     card_body(uiOutput("hover_info"))
   )
@@ -82,58 +88,29 @@ ui <- page_sidebar(
 
 # -- 4. Server Logic -----------------------------------------------------------
 server <- function(input, output, session) {
-
+  
   # --- Reactive Values ---
   # Stores user-added hunches and temporary click information.
   rv <- reactiveValues(
-    hunches = data.frame(Year=numeric(), Count=numeric(), Type=character(), Comment=character(), id=character()),
+    hunches = data.frame(Year=numeric(), Count=numeric(), Comment=character(), id=character()),
     pending_hunch = NULL
   )
-
+  
   # --- Event Observers ---
-  # Clear hunches if the interval width is changed.
-  observeEvent(input$interval_width, {
-    rv$hunches <- data.frame(Year=numeric(), Count=numeric(), Type=character(), Comment=character(), id=character())
-  })
-
-  # Triggered when user clicks the plot.
+  # Triggered when user clicks the plot to add an annotation.
   observeEvent(input$plot_click, {
     click <- input$plot_click
     
-    # Create interpolation functions for both lines
-    imm_data <- migration_data %>% filter(Type == "Immigration")
-    em_data <- migration_data %>% filter(Type == "Emigration")
+    min_year <- min(migration_data$Year, na.rm = TRUE)
+    max_year <- max(migration_data$Year, na.rm = TRUE)
+    if(click$x < min_year || click$x > max_year) return()
     
-    imm_fun <- approxfun(imm_data$Year, imm_data$Count)
-    em_fun <- approxfun(em_data$Year, em_data$Count)
+    rv$pending_hunch <- list(Year = click$x, Count = click$y)
     
-    # Interpolate Y values at the clicked X coordinate
-    y_imm <- imm_fun(click$x)
-    y_em <- em_fun(click$x)
-    
-    # Proceed only if the click is within the data range
-    if(is.na(y_imm) || is.na(y_em)) return()
-
-    # Determine which line was closer to the click's Y coordinate
-    if (abs(click$y - y_imm) < abs(click$y - y_em)) {
-      hunch_type <- "Immigration"
-      hunch_count <- y_imm
-    } else {
-      hunch_type <- "Emigration"
-      hunch_count <- y_em
-    }
-    
-    # Store the pending hunch data
-    rv$pending_hunch <- list(Year = click$x, Count = hunch_count, Type = hunch_type)
-    
-    # Show a modal dialog to ask for a comment
     showModal(modalDialog(
       title = "Add Annotation",
       textInput("hunch_comment", "Enter your comment or hunch:", placeholder = "e.g., 'Possible economic downturn'"),
-      footer = tagList(
-        modalButton("Cancel"),
-        actionButton("submit_hunch", "Add Annotation")
-      )
+      footer = tagList(modalButton("Cancel"), actionButton("submit_hunch", "Add Annotation"))
     ))
   })
   
@@ -144,16 +121,34 @@ server <- function(input, output, session) {
     new_hunch <- data.frame(
       Year = rv$pending_hunch$Year,
       Count = rv$pending_hunch$Count,
-      Type = rv$pending_hunch$Type,
       Comment = input$hunch_comment,
-      id = paste0("hunch-", Sys.time()) # Unique ID
+      id = paste0("hunch-", as.numeric(Sys.time())) # Unique ID
     )
     
     rv$hunches <- bind_rows(rv$hunches, new_hunch)
-    rv$pending_hunch <- NULL # Clear pending hunch
+    rv$pending_hunch <- NULL
     removeModal()
   })
-
+  
+  # Triggered by the "Clear All My Annotations" button.
+  observeEvent(input$clear_hunches, {
+    rv$hunches <- data.frame(Year=numeric(), Count=numeric(), Comment=character(), id=character())
+  })
+  
+  # Triggered by double-clicking the plot to remove an annotation.
+  observeEvent(input$plot_dblclick, {
+    # Do nothing if there are no hunches to remove
+    if (nrow(rv$hunches) == 0) return()
+    
+    # Find the point closest to the double-click
+    near_point_to_delete <- nearPoints(rv$hunches, input$plot_dblclick, maxpoints = 1, threshold = 10)
+    
+    # If a point is found, remove it from the reactive data frame
+    if (nrow(near_point_to_delete) > 0) {
+      rv$hunches <- rv$hunches %>% filter(id != near_point_to_delete$id)
+    }
+  })
+  
   # --- Base Plot ---
   base_plot <- reactive({
     ggplot(migration_data, aes(x = Year, y = Count, color = Type)) +
@@ -167,43 +162,46 @@ server <- function(input, output, session) {
       theme_minimal(base_size = 14) +
       theme(legend.position = "bottom", plot.title = element_text(face = "bold", size = 18), plot.subtitle = element_text(color = "grey30"))
   })
-
-  # --- Main Plot Rendering ---
-  output$migration_plot <- renderPlot({
+  
+  # --- Reactive Plot Object ---
+  # This reactive expression generates the plot. It only depends on the base plot
+  # and the user's annotations (hunches). It will NOT re-run on hover events.
+  plot_to_render <- reactive({
     p <- base_plot()
-
-    # If there are user-added hunches, add them to the plot.
+    
     if (nrow(rv$hunches) > 0) {
       user_hunches <- rv$hunches
       
-      # Generate distribution data for each hunch
       interval_data <- user_hunches %>%
         rowwise() %>%
         reframe(
           Year = Year,
           Value = rnorm(1000, mean = Count, sd = Count * 0.1),
           Comment = Comment,
-          Type = Type
+          id = id
         )
       
       p <- p +
-        # Add the gradient interval layer for each hunch
-        stat_gradientinterval(data = interval_data, aes(x = Year, y = Value, fill = after_stat(level), group = Comment), .width = input$interval_width, inherit.aes = FALSE, show.legend = FALSE) +
-        # Add a point to highlight the hunch location
+        stat_gradientinterval(data = interval_data, aes(x = Year, y = Value, fill = after_stat(level), group = id), .width = input$interval_width, inherit.aes = FALSE, show.legend = FALSE, interval_size = 0) +
         geom_point(data = user_hunches, aes(x = Year, y = Count), color = "black", size = 4, shape = 21, fill = "white", stroke = 1.5, inherit.aes = FALSE) +
-        # Add the user's comment as a label
         geom_text_repel(data = user_hunches, aes(x = Year, y = Count, label = Comment), box.padding = 1, point.padding = 0.5, segment.color = 'grey50', inherit.aes = FALSE) +
         scale_fill_brewer(palette = "Blues")
     }
-
+    
     p
+  })
+  
+  # --- Main Plot Rendering ---
+  # This simply calls the reactive plot object.
+  output$migration_plot <- renderPlot({
+    plot_to_render()
   }, res = 100)
-
+  
   # --- Hover Information UI ---
+  # This UI element updates on hover, but does not trigger a plot re-render.
   output$hover_info <- renderUI({
     req(input$plot_hover)
     
-    # Check for proximity to both pre-defined annotations and user hunches
     near_annotation <- nearPoints(annotations_df, input$plot_hover, xvar = "year", yvar = "y_pos", threshold = 10, maxpoints = 1)
     near_hunch <- if(nrow(rv$hunches) > 0) nearPoints(rv$hunches, input$plot_hover, xvar = "Year", yvar = "Count", threshold = 10, maxpoints = 1) else data.frame()
     
@@ -211,19 +209,14 @@ server <- function(input, output, session) {
       info <- near_hunch
       div(class = "alert alert-info",
           h5("User Annotation Details"),
-          p(strong("Type: "), info$Type, br(),
-            strong("Year: "), round(info$Year, 1), br(),
-            strong("Value (Interpolated): "), scales::comma(round(info$Count)), br(),
-            strong("Comment: "), info$Comment
-          )
+          p(strong("Year: "), round(info$Year, 1), br(), strong("Value: "), scales::comma(round(info$Count)), br(), strong("Comment: "), info$Comment),
+          p(em("Double-click this point to delete."))
       )
     } else if (nrow(near_annotation) > 0) {
       info <- near_annotation
       div(class = "alert alert-secondary",
           h5("Event Details"),
-          p(strong("Event: "), info$label, br(),
-            strong("Year: "), info$year
-          )
+          p(strong("Event: "), info$label, br(), strong("Year: "), info$year)
       )
     } else {
       p("Hover over an annotation point to see details here.", class = "text-muted")
