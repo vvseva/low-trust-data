@@ -1,0 +1,102 @@
+---
+title: "Untitled"
+output: html_document
+date: "2025-07-22"
+---
+
+
+```{r}
+library(readr)
+poster_map <- read.csv("poster_map.csv", sep = ";")
+library(dplyr)
+library(tidyr)
+poster_map |> 
+  mutate(y = row_number()) |> 
+  pivot_longer(cols = -y, names_to = "x", values_to = "poster_id") |> 
+  mutate(x = as.numeric(gsub("X", "", x))) |> 
+  na.omit() |> 
+  mutate(y = -y)-> poster_map_clean
+```
+
+
+```{r}
+# read votes
+poster_votes <- read.csv("IC2S2 2025 — Poster Award Poll Day 1 2.csv", 
+                         col.names = c("time", "poster_id"))
+
+library(lubridate)
+
+poster_votes |> 
+  count(poster_id) -> 
+  poster_votes_clean
+```
+
+
+```{r}
+
+# --- 1. Installation and Loading Libraries ---
+
+# Install packages if you don't have them already
+# install.packages("ggplot2")
+# install.packages("dplyr")
+
+# Load the required libraries
+library(ggplot2)
+library(dplyr)
+
+
+# You can inspect the first few rows of the generated data
+# head(poster_data)
+
+
+# --- 3. Creating the Scatter Plot Visualization ---
+
+# Now we use ggplot2 to create the scatter plot.
+# This is better for non-grid data than a tile-based heatmap.
+ggplot(
+  data = poster_map_clean |> 
+    left_join(poster_votes_clean) |> 
+    mutate(n = n |> replace_na(0)) |> 
+    mutate(n = n) |> 
+    mutate(text_size = n+1),
+  # We map both color and size to Votes for a stronger visual effect
+  aes(x = x, y = y, color = n)
+) +
+  # geom_point creates the bubbles
+  geom_point(aes(size = n), alpha = 0.7) + # alpha adds some transparency
+  geom_text(
+    aes(label = poster_id, size = n),
+    # vjust = 0, # Adjust vertical position of text labels
+    color = "black" # Color of the text labels
+  ) +
+
+  # Define the color scale for the points.
+  # Viridis is a colorblind-friendly palette.
+  scale_color_distiller(type  = "seq", palette = "Blues", name = "Total Votes", direction  = 1) +
+
+  # Define the size scale for the points
+  scale_size_continuous(range = c(4, 12), name = "Total Votes") +
+
+  # Set the theme and labels
+  theme_void(base_family = "sans") +
+  theme(
+    plot.title = element_text(size = 20),
+    # axis.title = element_text(size = 14),
+    # axis.text = element_text(size = 12),
+    legend.title = element_text(size = 12),
+    legend.text = element_text(size = 10),
+    # panel.grid.major = element_line(color = "grey90"),
+    # panel.grid.minor = element_line(color = "grey95")
+    legend.position = "bottom"
+  ) +
+  labs(
+    title = "Poster Votes by Location",
+    x = NULL,
+    y = NULL
+  ) +
+  # Ensure the aspect ratio is equal so the spatial layout is not distorted
+  coord_fixed()
+
+ggsave("poster_votes_plot2.jpg", width = 10, height = 8, dpi = 300)
+```
+

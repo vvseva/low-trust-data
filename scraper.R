@@ -38,3 +38,4 @@ while (TRUE) {
   cat(paste("Waiting for", check_interval_seconds, "seconds...\n\n"))
   Sys.sleep(check_interval_seconds)
 }
+

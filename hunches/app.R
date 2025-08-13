@@ -252,3 +252,10 @@ shinyApp(ui = ui, server = server)
 
 # --- User-Generated Annotations Code ---
 # This code defines a data frame with your custom annotations.
+
+# --- User-Generated Annotations Code ---
+# This code defines a data frame with your custom annotations.
+user_annotations <- structure(list(Year = 2013.50338780671, Count = 152330.607003194, 
+                                   Comment = "more certain", id = "hunch-1755077931.67438", 
+                                   IntervalWidth = 0.1), class = "data.frame", row.names = c(NA, 
+                                                                                             -1L))
